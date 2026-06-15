@@ -26,7 +26,6 @@
 #include "usart.h"
 #include "YIS130.h"
 #include "arm_math.h"
-#include "IM_TEST.h"
 #include "stdio.h"
 #include "AS5048.h"
 #include "odom_protocol.h"
@@ -216,7 +215,6 @@ int main(void)
         mpu_data[0].REAL_YAW_MARK = 0;
 
         can_filter_init();
-        IM_TEST_initialize();
 
         HAL_TIM_Base_Start_IT(&htim13);
         HAL_TIM_Base_Start_IT(&htim14);
@@ -592,10 +590,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	                         request_encoder_sample_from_isr();
 
                          if(mpu_data[0].cali == 1){
-//                                      rtU.X_ACCIN  = mpu_data[0].acc_cali[0];
-//                                      rtU.Y_ACCIN  = mpu_data[0].acc_cali[1];
-
-                                        if(times >= 500){
+	                                        if(times >= 500){
 
 	                                                add++;
 	                                                uint8_t has_encoder_delta = take_encoder_delta_ready();
@@ -749,9 +744,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-
-
-
-
-
