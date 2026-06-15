@@ -497,6 +497,20 @@ static uint8_t is_ball_present(void)
         return (HAL_GPIO_ReadPin(BALL_DETECT_GPIO_Port, BALL_DETECT2_Pin) == GPIO_PIN_SET) ? 1U : 0U;
 }
 
+static uint64_t odom_get_isr_tick_snapshot(void)
+{
+        uint64_t tick;
+        uint32_t primask = __get_PRIMASK();
+
+        __disable_irq();
+        tick = odom_isr_tick;
+        if(primask == 0U){
+                __enable_irq();
+        }
+
+        return tick;
+}
+
 /* 处理上位机发来的 0xAA 0x55 帧 */
 static void handle_upstream_frame(const OdomUpstreamFrame_t *fr)
 {
@@ -509,7 +523,7 @@ static void handle_upstream_frame(const OdomUpstreamFrame_t *fr)
                 }
                 OdomTimeSyncRespPayload_t resp;
                 resp.echoed_host_time_us = host_us;
-                resp.mcu_time_us = odom_isr_tick * (uint64_t)ODOM_ISR_PERIOD_US;
+                resp.mcu_time_us = odom_get_isr_tick_snapshot() * (uint64_t)ODOM_ISR_PERIOD_US;
                 uint16_t flen = odom_pack_time_sync_resp(odom_resp_buf, fr->seq, &resp);
                 send_upstream_response(odom_resp_buf, flen);
         } else if(fr->msg_type == ODOM_MSG_SET_LOCAL_ORIGIN){
