@@ -6,25 +6,21 @@
 #define AS5048_NUMBER 2  
 #define AS5048_RAW_CALIBRATION_MODE 1
 
+#define AS5048_ENCODER_COUNTS_PER_REV 16384
+#define AS5048_ENCODER_HALF_COUNTS    (AS5048_ENCODER_COUNTS_PER_REV / 2)
+#define AS5048_DATA_MASK           0x3FFFU
+#define AS5048_ERROR_FLAG          0x4000U
+#define AS5048_PARITY_FLAG         0x8000U
+#define AS5048_READ_FLAG           0x4000U
+#define AS5048_ADDRESS_MASK        0x3FFFU
 
-
-#define SPI_CMD_READ				0x4000 // flag indicating read attempt
-#define SPI_CMD_WRITE				0x8000 // flag indicating write attempt
-#define SPI_NOP							0x0000//B0000000000000000 No operation dummy information
-#define SPI_REG_AGC					0x7ffd // agc register when using SPI 
-#define SPI_REG_MAG					0x7ffe // magnitude register when using SPI
-#define SPI_REG_DATA				0xffff // data register when using SPI
-#define SPI_REG_CLRERR			0x4001 // clear error register when using SPI
-#define SPI_REG_ZEROPOS_HI	0x0016 // zero position register high byte
-#define SPI_REG_ ZEROPOS_LO	0x0017 // zero position register low byte
-
-// 锟斤拷锟斤拷酶锟斤拷锟脚夹ｏ拷锟轿伙拷母锟斤拷锟斤拷拇锟斤拷锟斤拷锟饺≈革拷锟�
-#define CMD_ANGLE            0xffff
-#define CMD_AGC              0x7ffd
-#define CMD_MAG              0x7ffe
-#define CMD_CLAER            0x4001
-#define CMD_NOP              0xc000
-
+#define SPI_NOP                    0x0000U
+#define SPI_REG_AGC                0x3FFDU
+#define SPI_REG_MAG                0x3FFEU
+#define SPI_REG_DATA               0x3FFFU
+#define SPI_REG_CLRERR             0x0001U
+#define SPI_REG_ZEROPOS_HI         0x0016U
+#define SPI_REG_ZEROPOS_LO         0x0017U
 
 void AS5048_init(int AS5048_ID,SPI_HandleTypeDef *spi,GPIO_TypeDef *GPIOx,uint16_t GPIO_Pin);
 uint16_t AS5048_Read(const int AS5048_ID, uint16_t registerAddress);
@@ -34,19 +30,21 @@ void AS5048_dataUpdate(const int AS5048_ID);
  * @brief AS5048_STRUCT
  */
 typedef struct {
-  
-	
-	const int AS5048_ID;
-  SPI_HandleTypeDef *spi_number;       ///< SPI
+	int AS5048_ID;
+	SPI_HandleTypeDef *spi_number;       ///< SPI
 	GPIO_TypeDef *GPIOx; ///<GPIO_CS
 	uint16_t GPIO_Pin; ///<GPIO_PIN_CS
-  int    angle;
-	int    last_angle; //  cc_direction
-	int    total_angle;
-	int    cirle;
-	int    delta_dis;
-	int    diff_hist[3];
+	int angle;
+	int last_angle; //  cc_direction
+	int total_angle;
+	int cirle;
+	int delta_dis;
+	int diff_hist[3];
 	uint8_t motion_state;
+	uint8_t valid;
+	uint8_t last_error_flags;
+	uint16_t last_raw_response;
+	uint32_t error_count;
 
 } AS5048;
 
