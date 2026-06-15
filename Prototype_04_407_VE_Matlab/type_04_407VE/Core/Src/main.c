@@ -139,6 +139,8 @@ static uint16_t odom_vel_ticks = 0;
 static volatile uint8_t encoder_sample_pending = 0;
 static volatile uint8_t encoder_delta_ready = 0;
 static uint16_t encoder_sample_divider = 0;
+static float encoder_odom_last_yaw_rad = 0.0f;
+static uint8_t encoder_odom_yaw_initialized = 0;
 
 /* ODOM output rate: ticks between frames (ISR=20kHz, 100 ticks=5ms=200Hz) */
 #define ODOM_OUTPUT_TICKS 100
@@ -146,6 +148,7 @@ static uint16_t encoder_sample_divider = 0;
 #define ODOM_ENCODER_SAMPLE_TICKS 20U
 /* ISR period in microseconds */
 #define ODOM_ISR_PERIOD_US 50
+#define ODOM_PI_F 3.1415926f
 #define DEG_TO_RAD_F (3.1415926f / 180.0f)
 
 /* USER CODE END PV */
@@ -391,12 +394,67 @@ static uint8_t take_encoder_delta_ready(void)
         return 1U;
 }
 
+static float odom_wrap_pi(float angle)
+{
+        while(angle > ODOM_PI_F){
+                angle -= 2.0f * ODOM_PI_F;
+        }
+        while(angle < -ODOM_PI_F){
+                angle += 2.0f * ODOM_PI_F;
+        }
+        return angle;
+}
+
+static void reset_encoder_odom_yaw_reference(void)
+{
+        encoder_odom_last_yaw_rad = mpu_data[0].YAW_ANGLE * DEG_TO_RAD_F;
+        encoder_odom_yaw_initialized = 1U;
+}
+
+static void integrate_orthogonal_encoder_delta(void)
+{
+        float yaw_rad = mpu_data[0].YAW_ANGLE * DEG_TO_RAD_F;
+        float dyaw = 0.0f;
+        float dx_wheel = (float)AS5048s[ODOM_X_ENCODER_INDEX].delta_dis
+                       * ODOM_X_ENCODER_SIGN
+                       * ODOM_X_WHEEL_METERS_PER_COUNT;
+        float dy_wheel = (float)AS5048s[ODOM_Y_ENCODER_INDEX].delta_dis
+                       * ODOM_Y_ENCODER_SIGN
+                       * ODOM_Y_WHEEL_METERS_PER_COUNT;
+
+        if(encoder_odom_yaw_initialized == 0U){
+                encoder_odom_last_yaw_rad = yaw_rad;
+                encoder_odom_yaw_initialized = 1U;
+        }else{
+                dyaw = odom_wrap_pi(yaw_rad - encoder_odom_last_yaw_rad);
+                encoder_odom_last_yaw_rad = yaw_rad;
+        }
+
+        /* Rotation compensation for tracking wheels offset from robot center. */
+        float dx_body = dx_wheel + ODOM_X_WHEEL_Y_OFFSET_M * dyaw;
+        float dy_body = dy_wheel - ODOM_Y_WHEEL_X_OFFSET_M * dyaw;
+        float cos_yaw = arm_cos_f32(yaw_rad);
+        float sin_yaw = arm_sin_f32(yaw_rad);
+        float dx_world = dx_body * cos_yaw - dy_body * sin_yaw;
+        float dy_world = dx_body * sin_yaw + dy_body * cos_yaw;
+
+        mpu_data[0].X_tt += dx_world;
+        mpu_data[0].Y_tt += dy_world;
+        mpu_data[0].REAL_X = mpu_data[0].X_tt;
+        mpu_data[0].REAL_Y = mpu_data[0].Y_tt;
+
+        odom_dx_world_acc += dx_world;
+        odom_dy_world_acc += dy_world;
+        odom_vel_ticks += ODOM_ENCODER_SAMPLE_TICKS;
+}
+
 static void reset_odom_runtime_accumulators(void)
 {
         odom_dx_world_acc = 0.0f;
         odom_dy_world_acc = 0.0f;
         odom_dyaw_acc = 0.0f;
         odom_vel_ticks = 0;
+        encoder_odom_yaw_initialized = 0U;
         mpu_data[0].vel[0] = 0.0;
         mpu_data[0].vel[1] = 0.0;
         mpu_data[0].vel[2] = 0.0;
@@ -545,27 +603,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	                                                mpu_data[0].REAL_YAW = mpu_data[0].YAW_ANGLE;
 
 	            if(has_encoder_delta != 0U){
-	                rtU.W1 = -AS5048s[1].delta_dis * AS5048_LEFT_METERS_PER_COUNT;
-	                rtU.W2 = AS5048s[0].delta_dis * AS5048_RIGHT_METERS_PER_COUNT;
-	            }else{
-	                rtU.W1 = 0.0f;
-	                rtU.W2 = 0.0f;
-	            }
-	            rtU.DEG = mpu_data[0].REAL_YAW;
-	            IM_TEST_step();
-
-	            if(has_encoder_delta != 0U){
-	                /* ROS2 convention: X = forward(+), Y = left(+)
-	                 * IM_TEST model outputs YOUT as the forward component and XOUT as the lateral component. */
-	                mpu_data[0].X_tt += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
-	                mpu_data[0].Y_tt += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
-	                                                    mpu_data[0].REAL_Y = mpu_data[0].Y_tt;
-	                                                    mpu_data[0].REAL_X = mpu_data[0].X_tt;
-
-	                                                    /* 累积世界系增量用于速度计算 (ROS2: dx=forward, dy=left) */
-	                                                    odom_dx_world_acc += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
-	                                                    odom_dy_world_acc += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
-	                                                    odom_vel_ticks += ODOM_ENCODER_SAMPLE_TICKS;
+	                integrate_orthogonal_encoder_delta();
 	            }
 #if ODOM_BINARY_MODE
                                                 if(add >= ODOM_OUTPUT_TICKS){
@@ -638,11 +676,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 	                                        }else{
 
-	                                          (void)take_encoder_delta_ready();
-	                                          rtU.W1 = 0.0f;
-	                                          rtU.W2 = 0.0f;
-	                                          rtU.DEG = mpu_data[0].YAW_ANGLE;
-	                                          IM_TEST_step();
+	                                          if(take_encoder_delta_ready() != 0U){
+	                                                  reset_encoder_odom_yaw_reference();
+	                                          }
 	                                          mpu_data[0].vel[0] = 0;
 	                                    mpu_data[0].vel[1] = 0;
 	                                                times ++ ;
