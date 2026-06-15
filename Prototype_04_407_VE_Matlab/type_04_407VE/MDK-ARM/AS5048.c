@@ -148,6 +148,20 @@ uint16_t AS5048_Read(const int AS5048_ID, uint16_t registerAddress)
 
 	AS5->last_raw_response = response;
 
+	/* Detect stuck-at-zero: if response is 0x0000 AND the previous non-zero reading
+	 * is far away (indicating a jump, not smooth motion through zero), reject it.
+	 * A genuine angle=0 will have prior readings near 0 (e.g., 0xFFFF, 0x0001).
+	 * A spurious SPI glitch reads 0x0000 when the real angle is ~7448 (encoder 1). */
+	if (response == 0x0000U && AS5->angle != 0) {
+		int dist = (AS5->angle < AS5048_ENCODER_HALF_COUNTS) ? AS5->angle : (AS5048_ENCODER_COUNTS_PER_REV - AS5->angle);
+		if (dist > 100) {  /* >100 counts from zero = ~0.6° — unlikely smooth transition */
+			AS5->valid = 0U;
+			AS5->last_error_flags = 0xFBU;
+			AS5->error_count++;
+			return (uint16_t)AS5->angle;
+		}
+	}
+
 	if (as5048_even_parity_ok(response) == 0U) {
 		AS5->valid = 0U;
 		AS5->last_error_flags = 0xFCU;
@@ -195,6 +209,7 @@ void AS5048_dataUpdate(const int AS5048_ID)
 
 	if (AS5->valid == 0U) {
 		AS5->delta_dis = 0;
+		AS5->last_angle = AS5->angle;  /* Anchor to prevent jump on valid transition */
 		return;
 	}
 

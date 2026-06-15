@@ -41,3 +41,4 @@ Prototype_04_407_VE_Matlab/type_04_407VE/MDK-ARM/DebugConfig/
 *.bak
 *.tmp
 build_gcc/
+.mindfs/
