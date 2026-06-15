@@ -120,7 +120,7 @@ volatile uint16_t rcv_len = 0;   /* 实际收到字节数, 由 idle 中断记录
 int rcv_err = 3;
 char mpu_buff[220];
 uint16_t rxclear = 0;
-int rcv_flag = 0;
+volatile uint8_t rcv_flag = 0;
 int rst_temp = 0;
 
 /* ODOM protocol variables */
@@ -232,6 +232,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+                if(rcv_flag != 0U){
+                        Rcv_DealData();
+                }
 
   }
   /* USER CODE END 3 */
@@ -298,8 +301,7 @@ void Rcv_IdleCallback(void){
         }
 }
 
-/* 等待上一次串口 TX (DMA 或阻塞) 完成, 然后用 DMA 发送响应帧。
- * 在 TIM11 ISR 里调用, 200Hz 下 ODOM_STATE 占用约 4ms, 用轮询保护避免覆盖。*/
+/* 等待上一次串口 TX (DMA 或阻塞) 完成, 然后用 DMA 发送响应帧。*/
 static void send_upstream_response(const uint8_t *buf, uint16_t len)
 {
         uint32_t guard = 0;
@@ -480,9 +482,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                 odom_dx_world_acc += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
                                                 odom_dy_world_acc += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
                                                 odom_vel_ticks++;
-
-                                                Rcv_DealData();
-
 #if ODOM_BINARY_MODE
                                                 if(add >= ODOM_OUTPUT_TICKS){
                                                         /* 连续 yaw (rad) */
