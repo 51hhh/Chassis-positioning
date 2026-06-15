@@ -136,9 +136,14 @@ static float odom_dx_world_acc = 0.0f;
 static float odom_dy_world_acc = 0.0f;
 static float odom_dyaw_acc = 0.0f;
 static uint16_t odom_vel_ticks = 0;
+static volatile uint8_t encoder_sample_pending = 0;
+static volatile uint8_t encoder_delta_ready = 0;
+static uint16_t encoder_sample_divider = 0;
 
 /* ODOM output rate: ticks between frames (ISR=20kHz, 100 ticks=5ms=200Hz) */
 #define ODOM_OUTPUT_TICKS 100
+/* Encoder SPI sampling rate: 20kHz / 20 = 1kHz */
+#define ODOM_ENCODER_SAMPLE_TICKS 20U
 /* ISR period in microseconds */
 #define ODOM_ISR_PERIOD_US 50
 #define DEG_TO_RAD_F (3.1415926f / 180.0f)
@@ -148,6 +153,7 @@ static uint16_t odom_vel_ticks = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static void service_encoder_sampling(void);
 
 /* USER CODE END PFP */
 
@@ -234,6 +240,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+                service_encoder_sampling();
                 if(rcv_flag != 0U){
                         Rcv_DealData();
                 }
@@ -332,6 +339,56 @@ static void send_odom_state_payload(const OdomStatePayload_t *payload)
         }else{
                 odom_tx_drop_count++;
         }
+}
+
+static void request_encoder_sample_from_isr(void)
+{
+        encoder_sample_divider++;
+        if(encoder_sample_divider >= ODOM_ENCODER_SAMPLE_TICKS){
+                encoder_sample_divider = 0;
+                if(encoder_sample_pending < 0xFFU){
+                        encoder_sample_pending++;
+                }
+        }
+}
+
+static uint8_t take_encoder_sample_request(void)
+{
+        uint8_t do_sample = 0U;
+
+        __disable_irq();
+        if(encoder_sample_pending != 0U){
+                encoder_sample_pending--;
+                do_sample = 1U;
+        }
+        __enable_irq();
+
+        return do_sample;
+}
+
+static void service_encoder_sampling(void)
+{
+        if(encoder_delta_ready != 0U){
+                return;
+        }
+        if(take_encoder_sample_request() == 0U){
+                return;
+        }
+
+        AS5048_getREGValue(1);
+        AS5048_dataUpdate(1);
+        AS5048_getREGValue(2);
+        AS5048_dataUpdate(2);
+        encoder_delta_ready = 1U;
+}
+
+static uint8_t take_encoder_delta_ready(void)
+{
+        if(encoder_delta_ready == 0U){
+                return 0U;
+        }
+        encoder_delta_ready = 0U;
+        return 1U;
 }
 
 static void reset_odom_runtime_accumulators(void)
@@ -473,7 +530,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
                  if (htim == (&htim11)){
 
-                         odom_isr_tick++;
+	                         odom_isr_tick++;
+	                         request_encoder_sample_from_isr();
 
                          if(mpu_data[0].cali == 1){
 //                                      rtU.X_ACCIN  = mpu_data[0].acc_cali[0];
@@ -481,29 +539,34 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
                                         if(times >= 500){
 
-                                                add++;
-                                                AS5048_getREGValue(1);
-                                                AS5048_dataUpdate(1);
-                                                AS5048_getREGValue(2);
-                                                AS5048_dataUpdate(2);
+	                                                add++;
+	                                                uint8_t has_encoder_delta = take_encoder_delta_ready();
 
-                                                mpu_data[0].REAL_YAW = mpu_data[0].YAW_ANGLE;
+	                                                mpu_data[0].REAL_YAW = mpu_data[0].YAW_ANGLE;
 
-            rtU.W1 = -AS5048s[1].delta_dis * AS5048_LEFT_METERS_PER_COUNT;
-            rtU.W2 = AS5048s[0].delta_dis * AS5048_RIGHT_METERS_PER_COUNT;
-            rtU.DEG = mpu_data[0].REAL_YAW;
+	            if(has_encoder_delta != 0U){
+	                rtU.W1 = -AS5048s[1].delta_dis * AS5048_LEFT_METERS_PER_COUNT;
+	                rtU.W2 = AS5048s[0].delta_dis * AS5048_RIGHT_METERS_PER_COUNT;
+	            }else{
+	                rtU.W1 = 0.0f;
+	                rtU.W2 = 0.0f;
+	            }
+	            rtU.DEG = mpu_data[0].REAL_YAW;
+	            IM_TEST_step();
 
-            /* ROS2 convention: X = forward(+), Y = left(+)
-             * IM_TEST model outputs YOUT as the forward component and XOUT as the lateral component. */
-            mpu_data[0].X_tt += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
-            mpu_data[0].Y_tt += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
-                                                mpu_data[0].REAL_Y = mpu_data[0].Y_tt;
-                                                mpu_data[0].REAL_X = mpu_data[0].X_tt;
+	            if(has_encoder_delta != 0U){
+	                /* ROS2 convention: X = forward(+), Y = left(+)
+	                 * IM_TEST model outputs YOUT as the forward component and XOUT as the lateral component. */
+	                mpu_data[0].X_tt += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
+	                mpu_data[0].Y_tt += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
+	                                                    mpu_data[0].REAL_Y = mpu_data[0].Y_tt;
+	                                                    mpu_data[0].REAL_X = mpu_data[0].X_tt;
 
-                                                /* 累积世界系增量用于速度计算 (ROS2: dx=forward, dy=left) */
-                                                odom_dx_world_acc += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
-                                                odom_dy_world_acc += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
-                                                odom_vel_ticks++;
+	                                                    /* 累积世界系增量用于速度计算 (ROS2: dx=forward, dy=left) */
+	                                                    odom_dx_world_acc += (-rtY.YOUT) * IM_TEST_ODOM_OUTPUT_SCALE;
+	                                                    odom_dy_world_acc += rtY.XOUT * IM_TEST_ODOM_OUTPUT_SCALE;
+	                                                    odom_vel_ticks += ODOM_ENCODER_SAMPLE_TICKS;
+	            }
 #if ODOM_BINARY_MODE
                                                 if(add >= ODOM_OUTPUT_TICKS){
                                                         /* 连续 yaw (rad) */
@@ -573,20 +636,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                 }
 #endif
 
-                                        }else{
+	                                        }else{
 
-                                                        AS5048_getREGValue(1);
-                                                        AS5048_dataUpdate(1);
-                                                        AS5048_getREGValue(2);
-                                                        AS5048_dataUpdate(2);
-                                          mpu_data[0].vel[0] = 0;
-                                    mpu_data[0].vel[1] = 0;
-                                                times ++ ;
-                                        }
+	                                          (void)take_encoder_delta_ready();
+	                                          rtU.W1 = 0.0f;
+	                                          rtU.W2 = 0.0f;
+	                                          rtU.DEG = mpu_data[0].YAW_ANGLE;
+	                                          IM_TEST_step();
+	                                          mpu_data[0].vel[0] = 0;
+	                                    mpu_data[0].vel[1] = 0;
+	                                                times ++ ;
+	                                        }
 
-                                IM_TEST_step();
-
-                 }
+	                 }
                 }
 }
 
