@@ -506,9 +506,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         uint64_t t_us = odom_isr_tick * (uint64_t)ODOM_ISR_PERIOD_US;
 
                                                         /* 状态位 */
-                                                        uint16_t status = ODOM_STATUS_ENC_VALID | ODOM_STATUS_IMU_VALID
-                                                                        | ODOM_STATUS_YAW_VALID | ODOM_STATUS_POS_VALID
-                                                                        | ODOM_STATUS_VEL_VALID;
+                                                        uint8_t enc_valid = ((AS5048s[0].valid != 0U) && (AS5048s[1].valid != 0U)) ? 1U : 0U;
+                                                        uint16_t status = ODOM_STATUS_IMU_VALID | ODOM_STATUS_YAW_VALID;
+                                                        uint8_t quality = ODOM_QUALITY_NORMAL;
+                                                        if(enc_valid != 0U){
+                                                                status |= ODOM_STATUS_ENC_VALID | ODOM_STATUS_POS_VALID | ODOM_STATUS_VEL_VALID;
+                                                        }else{
+                                                                status |= ODOM_STATUS_DEGRADED;
+                                                                quality = ODOM_QUALITY_DEGRADED;
+                                                        }
                                                                                                                 if(is_ball_present() != 0U){
                                                                                                                         status |= ODOM_STATUS_BALL_PRESENT;
                                                                                                                 }
@@ -523,7 +529,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         payload.vy = vy_body;
                                                         payload.wz = wz;
                                                         payload.status_bits = status;
-                                                        payload.quality = ODOM_QUALITY_NORMAL;
+                                                        payload.quality = quality;
                                                         payload.reserved = 0;
 
                                                         uint16_t frame_len = odom_pack_state(odom_frame_buf, odom_seq++, &payload);
