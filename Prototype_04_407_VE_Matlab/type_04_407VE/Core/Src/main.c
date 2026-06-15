@@ -125,7 +125,9 @@ int rst_temp = 0;
 
 /* ODOM protocol variables */
 static uint8_t odom_seq = 0;
-static uint8_t odom_frame_buf[ODOM_STATE_FRAME_LEN];
+static uint8_t odom_frame_buf[2][ODOM_STATE_FRAME_LEN];
+static uint8_t odom_frame_buf_index = 0;
+static uint32_t odom_tx_drop_count = 0;
 /* 上行响应使用独立缓冲, 避免与下行 ODOM_STATE 共用 */
 static uint8_t odom_resp_buf[ODOM_TIME_SYNC_RESP_FRAME_LEN];
 /* 累计成功归零次数 (event_counter) */
@@ -310,6 +312,26 @@ static void send_upstream_response(const uint8_t *buf, uint16_t len)
                 if(++guard > 200000U){ return; }  /* 超时直接放弃, 避免 ISR 死循环 */
         }
         HAL_UART_Transmit_DMA(&huart1, (uint8_t *)buf, len);
+}
+
+static void send_odom_state_payload(const OdomStatePayload_t *payload)
+{
+        uint8_t *frame_buf;
+        uint16_t frame_len;
+
+        if(huart1.gState != HAL_UART_STATE_READY){
+                odom_tx_drop_count++;
+                return;
+        }
+
+        frame_buf = odom_frame_buf[odom_frame_buf_index];
+        frame_len = odom_pack_state(frame_buf, odom_seq, payload);
+        if(HAL_UART_Transmit_DMA(&huart1, frame_buf, frame_len) == HAL_OK){
+                odom_seq++;
+                odom_frame_buf_index ^= 1U;
+        }else{
+                odom_tx_drop_count++;
+        }
 }
 
 static void reset_odom_runtime_accumulators(void)
@@ -531,8 +553,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         payload.quality = quality;
                                                         payload.reserved = 0;
 
-                                                        uint16_t frame_len = odom_pack_state(odom_frame_buf, odom_seq++, &payload);
-                                                        HAL_UART_Transmit_DMA(&huart1, odom_frame_buf, frame_len);
+                                                        send_odom_state_payload(&payload);
 
                                                         /* 重置累积器 */
                                                         odom_dx_world_acc = 0.0f;
