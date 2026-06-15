@@ -139,6 +139,7 @@ static uint16_t odom_vel_ticks = 0;
 #define ODOM_OUTPUT_TICKS 100
 /* ISR period in microseconds */
 #define ODOM_ISR_PERIOD_US 50
+#define DEG_TO_RAD_F (3.1415926f / 180.0f)
 
 /* USER CODE END PV */
 
@@ -499,7 +500,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         float sin_yaw = arm_sin_f32(yaw_cont);
                                                         float vx_body =  vx_world * cos_yaw + vy_world * sin_yaw;
                                                         float vy_body = -vx_world * sin_yaw + vy_world * cos_yaw;
-                                                        float wz = mpu_data[0].gyro[2]; /* IMU gyro Z, rad/s */
+                                                        float wz = mpu_data[0].gyro[2] * DEG_TO_RAD_F; /* YIS130 gyro Z: deg/s -> rad/s */
 
                                                         /* 时间戳 */
                                                         uint64_t t_us = odom_isr_tick * (uint64_t)ODOM_ISR_PERIOD_US;

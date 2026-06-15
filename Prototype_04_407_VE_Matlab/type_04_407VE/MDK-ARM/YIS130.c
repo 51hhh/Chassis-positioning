@@ -72,10 +72,17 @@ void can_filter_init(void)
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef rx_header;
-    uint8_t rx_data[8];
+    uint8_t rx_data[8] = {0};
 
 
-    HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data);
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK) {
+        HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+        return;
+    }
+    if (rx_header.IDE != CAN_ID_EXT) {
+        HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
+        return;
+    }
 		
 	  uint16_t pitch_raw;
 	  uint16_t roll_raw; 
@@ -86,6 +93,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
 			
         case 0x0CF02D59: //acc
+            if (rx_header.DLC != 6U) {
+                break;
+            }
             
 //						mpu_data[0].acc[0] = 1; //X Y Z
 //            mpu_data[0].acc[1] = 2;   
@@ -124,6 +134,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 				
             break;
         case 0x0CF02A59: // gryo unsign 20 bit each 
+            if (rx_header.DLC != 8U) {
+                break;
+            }
             // EACH 20 bit			
             // ignore
 							
@@ -136,6 +149,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 				    break;
 				
 				case 0x0CF03059: // quat
+            if (rx_header.DLC != 8U) {
+                break;
+            }
             // Little-endian
             mpu_data[0].quat[0] = ((float)(((rx_data[1] << 8) | rx_data[0])))* 3.0519E-005 - 1;  // w
             mpu_data[0].quat[1] = ((float)(((rx_data[3] << 8) | rx_data[2])))* 3.0519E-005 - 1;    // x
@@ -146,6 +162,9 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
             break;
         case 0x0CF02959: // pitch yaw roll
+            if (rx_header.DLC != 6U) {
+                break;
+            }
             // Little-endian
 //						mpu_data[0].PITCH = 0.5; // Y
 //            mpu_data[0].ROLL = 0.4; // X
