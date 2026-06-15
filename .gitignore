@@ -42,3 +42,15 @@ Prototype_04_407_VE_Matlab/type_04_407VE/MDK-ARM/DebugConfig/
 *.tmp
 build_gcc/
 .mindfs/
+# =========================
+# Debug and test artifacts
+# =========================
+*.log
+*.gdb
+gdb_output.txt
+__pycache__/
+*.pyc
+
+# Temporary test scripts
+test_fix.py
+test_status.py
