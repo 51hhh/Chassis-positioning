@@ -1,5 +1,7 @@
 # ODOM 协议设计讨论
 
+> 历史设计记录：本文保留早期 IM_TEST/VOFA/全向轮方案的推导背景。当前固件实现已经切换为 YIS130 CAN + 两只 AS5048A 正交 tracking wheel + 二进制 ODOM_STATE，当前用法以 `docs/read.md` 和 `docs/ODOM_UPPER_COMPUTER_GUIDE.md` 为准。
+
 ## 1. 当前固件时序底盘
 
 | 参数 | 值 |

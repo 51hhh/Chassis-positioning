@@ -141,6 +141,10 @@ static volatile uint8_t encoder_delta_ready = 0;
 static uint16_t encoder_sample_divider = 0;
 static float encoder_odom_last_yaw_rad = 0.0f;
 static uint8_t encoder_odom_yaw_initialized = 0;
+static volatile int encoder_delta_x_counts = 0;
+static volatile int encoder_delta_y_counts = 0;
+static volatile uint8_t encoder_delta_valid_mask = 0U;
+static volatile uint8_t encoder_latest_valid_mask = 0U;
 
 /* ODOM output rate: ticks between frames (ISR=20kHz, 100 ticks=5ms=200Hz) */
 #define ODOM_OUTPUT_TICKS 100
@@ -153,6 +157,15 @@ static uint8_t encoder_odom_yaw_initialized = 0;
 #define ODOM_RESP_TX_NONE 0U
 #define ODOM_RESP_TX_WAITING 1U
 #define ODOM_RESP_TX_SENDING 2U
+#define ODOM_ENCODER_X_VALID_MASK 0x01U
+#define ODOM_ENCODER_Y_VALID_MASK 0x02U
+#define ODOM_ENCODER_VALID_ALL (ODOM_ENCODER_X_VALID_MASK | ODOM_ENCODER_Y_VALID_MASK)
+
+typedef struct {
+        int x_counts;
+        int y_counts;
+        uint8_t valid_mask;
+} EncoderDeltaSample_t;
 
 static volatile uint8_t odom_resp_tx_state = ODOM_RESP_TX_NONE;
 
@@ -390,6 +403,9 @@ static uint8_t take_encoder_sample_request(void)
 
 static void service_encoder_sampling(void)
 {
+        uint8_t valid_mask = 0U;
+        uint32_t primask;
+
         if(encoder_delta_ready != 0U){
                 return;
         }
@@ -401,14 +417,34 @@ static void service_encoder_sampling(void)
         AS5048_dataUpdate(1);
         AS5048_getREGValue(2);
         AS5048_dataUpdate(2);
+
+        if(AS5048s[ODOM_X_ENCODER_INDEX].valid != 0U){
+                valid_mask |= ODOM_ENCODER_X_VALID_MASK;
+        }
+        if(AS5048s[ODOM_Y_ENCODER_INDEX].valid != 0U){
+                valid_mask |= ODOM_ENCODER_Y_VALID_MASK;
+        }
+
+        primask = __get_PRIMASK();
+        __disable_irq();
+        encoder_delta_x_counts = AS5048s[ODOM_X_ENCODER_INDEX].delta_dis;
+        encoder_delta_y_counts = AS5048s[ODOM_Y_ENCODER_INDEX].delta_dis;
+        encoder_delta_valid_mask = valid_mask;
+        encoder_latest_valid_mask = valid_mask;
         encoder_delta_ready = 1U;
+        if(primask == 0U){
+                __enable_irq();
+        }
 }
 
-static uint8_t take_encoder_delta_ready(void)
+static uint8_t take_encoder_delta_ready(EncoderDeltaSample_t *sample)
 {
-        if(encoder_delta_ready == 0U){
+        if(encoder_delta_ready == 0U || sample == 0){
                 return 0U;
         }
+        sample->x_counts = encoder_delta_x_counts;
+        sample->y_counts = encoder_delta_y_counts;
+        sample->valid_mask = encoder_delta_valid_mask;
         encoder_delta_ready = 0U;
         return 1U;
 }
@@ -445,14 +481,14 @@ static void reset_encoder_odom_yaw_reference(void)
         encoder_odom_yaw_initialized = 1U;
 }
 
-static void integrate_orthogonal_encoder_delta(void)
+static void integrate_orthogonal_encoder_delta(const EncoderDeltaSample_t *sample)
 {
         float yaw_rad = odom_get_local_yaw_rad();
         float dyaw = 0.0f;
-        float dx_wheel = (float)AS5048s[ODOM_X_ENCODER_INDEX].delta_dis
+        float dx_wheel = (float)sample->x_counts
                        * ODOM_X_ENCODER_SIGN
                        * ODOM_X_WHEEL_METERS_PER_COUNT;
-        float dy_wheel = (float)AS5048s[ODOM_Y_ENCODER_INDEX].delta_dis
+        float dy_wheel = (float)sample->y_counts
                        * ODOM_Y_ENCODER_SIGN
                        * ODOM_Y_WHEEL_METERS_PER_COUNT;
 
@@ -497,6 +533,14 @@ static void reset_odom_runtime_accumulators(void)
 static void reset_encoder_accumulators(void)
 {
         int idx;
+        uint32_t primask = __get_PRIMASK();
+
+        __disable_irq();
+        encoder_delta_ready = 0U;
+        encoder_delta_x_counts = 0;
+        encoder_delta_y_counts = 0;
+        encoder_delta_valid_mask = 0U;
+        encoder_latest_valid_mask = 0U;
         for(idx = 0; idx < AS5048_NUMBER; idx++){
                 AS5048s[idx].total_angle = 0;
                 AS5048s[idx].cirle = 0;
@@ -506,6 +550,9 @@ static void reset_encoder_accumulators(void)
                 AS5048s[idx].diff_hist[1] = 0;
                 AS5048s[idx].diff_hist[2] = 0;
                 AS5048s[idx].motion_state = 0;
+        }
+        if(primask == 0U){
+                __enable_irq();
         }
 }
 
@@ -651,7 +698,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	                                        if(times >= 500){
 
 	                                                add++;
-	                                                uint8_t has_encoder_delta = take_encoder_delta_ready();
+	                                                EncoderDeltaSample_t encoder_delta = {0, 0, 0U};
+	                                                uint8_t has_encoder_delta = take_encoder_delta_ready(&encoder_delta);
 	                                                uint32_t imu_now_ms = HAL_GetTick();
 	                                                uint8_t gyro_fresh = YIS130_IsGyroFresh(imu_now_ms);
 	                                                uint8_t yaw_fresh = YIS130_IsEulerFresh(imu_now_ms);
@@ -659,8 +707,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 	                                                mpu_data[0].REAL_YAW = mpu_data[0].YAW_ANGLE;
 
-	            if(has_encoder_delta != 0U && yaw_fresh != 0U){
-	                integrate_orthogonal_encoder_delta();
+	            if(has_encoder_delta != 0U && yaw_fresh != 0U && encoder_delta.valid_mask == ODOM_ENCODER_VALID_ALL){
+	                integrate_orthogonal_encoder_delta(&encoder_delta);
 	            }
 #if ODOM_BINARY_MODE
                                                 if(add >= ODOM_OUTPUT_TICKS){
@@ -688,7 +736,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         uint64_t t_us = odom_isr_tick * (uint64_t)ODOM_ISR_PERIOD_US;
 
                                                         /* 状态位 */
-                                                        uint8_t enc_valid = ((AS5048s[0].valid != 0U) && (AS5048s[1].valid != 0U)) ? 1U : 0U;
+                                                        uint8_t enc_valid = (encoder_latest_valid_mask == ODOM_ENCODER_VALID_ALL) ? 1U : 0U;
                                                         uint8_t pose_valid = (enc_valid != 0U && yaw_fresh != 0U) ? 1U : 0U;
                                                         uint16_t status = 0U;
                                                         uint8_t quality = ODOM_QUALITY_NORMAL;
@@ -746,7 +794,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 	                                        }else{
 
-	                                          if(take_encoder_delta_ready() != 0U && YIS130_IsEulerFresh(HAL_GetTick()) != 0U){
+	                                          EncoderDeltaSample_t encoder_delta = {0, 0, 0U};
+	                                          if(take_encoder_delta_ready(&encoder_delta) != 0U
+	                                             && encoder_delta.valid_mask == ODOM_ENCODER_VALID_ALL
+	                                             && YIS130_IsEulerFresh(HAL_GetTick()) != 0U){
 	                                                  reset_encoder_odom_yaw_reference();
 	                                          }
 	                                          mpu_data[0].vel[0] = 0;

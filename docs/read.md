@@ -1,31 +1,62 @@
-✅ MCU 端固件修改完成
-修改已直接落到原仓库 type_04_407VE。
+# ODOM 固件当前实现记录
 
-修改清单
-文件	改动
-MDK-ARM/odom_protocol.h	新增 0x20/0x21/0x30/0x31 类型常量、OdomTimeSyncReq/Resp/SetLocalOrigin/Ack payload 结构、OdomUpstreamFrame_t、odom_pack_time_sync_resp/odom_pack_set_origin_ack/odom_parse_upstream 声明
-MDK-ARM/odom_protocol.c	实现两个 pack 函数 + odom_parse_upstream 扫描器（找 AA 55 头、校验 ver/payload_len/CRC16-CCITT）
-Core/Src/main.c	RX DMA 缓冲 8 → 64 字节；Rcv_IdleCallback 用 NDTR 记录实际长度；Rcv_DealData 三路分发（旧 8 字节协议 / 0xBB 0xCC 复位 / 新 0xAA 0x55 帧）；新增 handle_upstream_frame + send_upstream_response（轮询等待 TX 空闲再 DMA 发送）
-0x30 SET_LOCAL_ORIGIN 处理逻辑
+## 当前数据链路
 
-1. 解 payload: `float x, y, yaw + uint8 flags + 3 reserved`
-2. `flags bit0=reset_xy, bit1=reset_yaw, bit2=reset_encoder`
-3. 为兼容旧版上位机，`flags=0` 时 MCU 按 `reset_xy + reset_yaw + reset_encoder` 全部执行
-4. `reset_xy`：覆盖 `mpu_data[0].X_tt / Y_tt / REAL_X / REAL_Y`
-5. `reset_yaw`：重置 `g_yaw_unwrap.continuous_rad = yaw`，并用当前 `YAW_ANGLE` 锚定 `prev_deg` 避免 unwrap 跳变
-6. `reset_encoder`：清零 `AS5048s[].total_angle / delta_dis / cirle`，并把 `last_angle` 锚到当前 `angle`
-7. 无论哪种归零，都会清空 odom 运行时积分缓存 `odom_dx_world_acc / odom_dy_world_acc / odom_vel_ticks`
-8. 回 `0x31 ACK (acked_seq, result_code=0, event_counter)`
-0x20 TIME_SYNC_REQ 处理
+YIS130 通过 CAN1 接入 STM32F407，SN65HVD230DR 负责 CAN 收发。YIS130 使用 SAE J1939 兼容扩展帧，默认 500 kbit/s、200 Hz 输出。
 
-1. 取 echoed_host_time_us2. 用 odom_isr_tick * 50us 作为 mcu_time_us3. 回 0x21 TIME_SYNC_RESP
-你需要做的
-在 MDK-ARM Keil 中重新编译整个工程（type_04_407VE.uvprojx）
-烧录到 STM32F407
-烧录后重启上位机节点 → 预期看到：
-time_sync_locked: true
-启动 3 秒内自动归零生效，/odom 发布 x=0, y=0, yaw=0
-桥接节点收到 SET_LOCAL_ORIGIN_ACK
-风险点
-send_upstream_response 在 TIM11 ISR(20kHz) 里轮询等待 TX 空闲；最坏情况 ODOM_STATE 发送中（~3.9ms），轮询 20 万次保护，超时直接放弃这次响应。极端情况下可能漏一次 ACK，但桥接节点重试机制可处理。
-ODOM_STATE 发送频率 100Hz，每次约 4ms 占用 TX，留给响应的窗口约 6ms/帧——足够应付 0.5Hz 的 TIME_SYNC + 仅启动一次的
+AS5048A 磁编码器通过 SPI1/SPI2 读取，当前用于正交 tracking wheel 里程计：
+
+- SPI1/AS5048 index 0：默认 body X/前进 tracking wheel
+- SPI2/AS5048 index 1：默认 body Y/左向 tracking wheel
+- 编码器采样请求由 TIM11 20 kHz ISR 分频到 1 kHz 产生
+- 阻塞式 SPI 读取在 main loop 执行，delta 和 valid 状态快照后再交给 ISR 消费
+
+## 串口协议
+
+UART1 115200 8N1 输出 `ODOM_STATE` 二进制帧：
+
+- 帧长：45 字节
+- 频率：200 Hz
+- 帧头：`AA 55`
+- 类型：`0x02`
+- payload：`<QffffffHBB`
+- CRC：CRC-16/CCITT，范围为 version 到 payload 末尾
+
+上位机命令仍走同一 UART：
+
+- `0x20 TIME_SYNC_REQ`：回 `0x21 TIME_SYNC_RESP`
+- `0x30 SET_LOCAL_ORIGIN`：回 `0x31 SET_LOCAL_ORIGIN_ACK`
+
+命令响应在 main loop 中处理，不在 TIM11 ISR 中执行。响应发送使用独立 DMA 缓冲，并通过三态保护阻止 200 Hz 状态帧抢占 ACK，直到响应 DMA 完成。
+
+## SET_LOCAL_ORIGIN 行为
+
+payload 为 `float x, y, yaw + uint8 flags + 3 reserved`。
+
+flags：
+
+- bit0：reset xy
+- bit1：reset yaw
+- bit2：reset encoder
+- flags 为 0 时按 reset all 兼容旧上位机
+
+执行效果：
+
+- reset xy：覆盖 `X_tt/Y_tt/REAL_X/REAL_Y`
+- reset yaw：设置本地 yaw 原点，并重置连续 yaw unwrap
+- reset encoder：清零 AS5048 累计角度、delta、圈数，并把 last_angle 锚到当前角度
+- 每次归零都会清空运行时速度积分缓存
+
+## 有效性与降级
+
+YIS130 的 gyro/euler CAN 帧有 100 ms freshness 检查。CAN 断流或 YIS130 停止输出时，固件会清掉 `IMU_VALID/YAW_VALID/POS_VALID/VEL_VALID`，并设置 `DEGRADED`。
+
+AS5048 任一通道 invalid 时，固件不会积分该次编码器 delta，也不会继续声明位置/速度有效。
+
+## 后续接正交轮时必须实测
+
+- SPI1/SPI2 是否确实对应 X/Y tracking wheel
+- `ODOM_X_ENCODER_SIGN`、`ODOM_Y_ENCODER_SIGN` 方向
+- `ODOM_X_WHEEL_Y_OFFSET_M`、`ODOM_Y_WHEEL_X_OFFSET_M` 旋转补偿偏置
+- `WHEEL_DIAMETER_M` 和每圈实际行程标定
+- AS5048 `valid/error_count/last_error_flags` 在实际线束上的稳定性
