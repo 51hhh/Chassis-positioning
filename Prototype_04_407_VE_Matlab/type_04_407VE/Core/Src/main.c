@@ -127,6 +127,7 @@ static uint8_t odom_seq = 0;
 static uint8_t odom_frame_buf[2][ODOM_STATE_FRAME_LEN];
 static uint8_t odom_frame_buf_index = 0;
 static uint32_t odom_tx_drop_count = 0;
+static volatile uint8_t odom_resp_tx_pending = 0;
 /* 上行响应使用独立缓冲, 避免与下行 ODOM_STATE 共用 */
 static uint8_t odom_resp_buf[ODOM_TIME_SYNC_RESP_FRAME_LEN];
 /* 累计成功归零次数 (event_counter) */
@@ -315,18 +316,35 @@ void Rcv_IdleCallback(void){
 /* 等待上一次串口 TX (DMA 或阻塞) 完成, 然后用 DMA 发送响应帧。*/
 static void send_upstream_response(const uint8_t *buf, uint16_t len)
 {
-        uint32_t guard = 0;
-        /* gState != HAL_UART_STATE_READY 表示 TX 还在进行 */
+        uint32_t start_ms = HAL_GetTick();
+
+        odom_resp_tx_pending = 1U;
         while(huart1.gState != HAL_UART_STATE_READY){
-                if(++guard > 200000U){ return; }  /* 超时直接放弃, 避免 ISR 死循环 */
+                if((uint32_t)(HAL_GetTick() - start_ms) > 10U){
+                        odom_resp_tx_pending = 0U;
+                        odom_tx_drop_count++;
+                        return;
+                }
         }
-        HAL_UART_Transmit_DMA(&huart1, (uint8_t *)buf, len);
+        if(HAL_UART_Transmit_DMA(&huart1, (uint8_t *)buf, len) != HAL_OK){
+                odom_resp_tx_pending = 0U;
+                odom_tx_drop_count++;
+        }
 }
 
 static void send_odom_state_payload(const OdomStatePayload_t *payload)
 {
         uint8_t *frame_buf;
         uint16_t frame_len;
+
+        if(odom_resp_tx_pending != 0U){
+                if(huart1.gState == HAL_UART_STATE_READY){
+                        odom_resp_tx_pending = 0U;
+                }else{
+                        odom_tx_drop_count++;
+                        return;
+                }
+        }
 
         if(huart1.gState != HAL_UART_STATE_READY){
                 odom_tx_drop_count++;
