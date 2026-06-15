@@ -127,7 +127,6 @@ static uint8_t odom_seq = 0;
 static uint8_t odom_frame_buf[2][ODOM_STATE_FRAME_LEN];
 static uint8_t odom_frame_buf_index = 0;
 static uint32_t odom_tx_drop_count = 0;
-static volatile uint8_t odom_resp_tx_pending = 0;
 /* 上行响应使用独立缓冲, 避免与下行 ODOM_STATE 共用 */
 static uint8_t odom_resp_buf[ODOM_TIME_SYNC_RESP_FRAME_LEN];
 /* 累计成功归零次数 (event_counter) */
@@ -151,6 +150,11 @@ static uint8_t encoder_odom_yaw_initialized = 0;
 #define ODOM_ISR_PERIOD_US 50
 #define ODOM_PI_F 3.1415926f
 #define DEG_TO_RAD_F (3.1415926f / 180.0f)
+#define ODOM_RESP_TX_NONE 0U
+#define ODOM_RESP_TX_WAITING 1U
+#define ODOM_RESP_TX_SENDING 2U
+
+static volatile uint8_t odom_resp_tx_state = ODOM_RESP_TX_NONE;
 
 /* USER CODE END PV */
 
@@ -318,16 +322,18 @@ static void send_upstream_response(const uint8_t *buf, uint16_t len)
 {
         uint32_t start_ms = HAL_GetTick();
 
-        odom_resp_tx_pending = 1U;
+        odom_resp_tx_state = ODOM_RESP_TX_WAITING;
         while(huart1.gState != HAL_UART_STATE_READY){
                 if((uint32_t)(HAL_GetTick() - start_ms) > 10U){
-                        odom_resp_tx_pending = 0U;
+                        odom_resp_tx_state = ODOM_RESP_TX_NONE;
                         odom_tx_drop_count++;
                         return;
                 }
         }
-        if(HAL_UART_Transmit_DMA(&huart1, (uint8_t *)buf, len) != HAL_OK){
-                odom_resp_tx_pending = 0U;
+        if(HAL_UART_Transmit_DMA(&huart1, (uint8_t *)buf, len) == HAL_OK){
+                odom_resp_tx_state = ODOM_RESP_TX_SENDING;
+        }else{
+                odom_resp_tx_state = ODOM_RESP_TX_NONE;
                 odom_tx_drop_count++;
         }
 }
@@ -337,13 +343,9 @@ static void send_odom_state_payload(const OdomStatePayload_t *payload)
         uint8_t *frame_buf;
         uint16_t frame_len;
 
-        if(odom_resp_tx_pending != 0U){
-                if(huart1.gState == HAL_UART_STATE_READY){
-                        odom_resp_tx_pending = 0U;
-                }else{
-                        odom_tx_drop_count++;
-                        return;
-                }
+        if(odom_resp_tx_state != ODOM_RESP_TX_NONE){
+                odom_tx_drop_count++;
+                return;
         }
 
         if(huart1.gState != HAL_UART_STATE_READY){
@@ -527,6 +529,13 @@ static uint64_t odom_get_isr_tick_snapshot(void)
         }
 
         return tick;
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+        if(huart == &huart1 && odom_resp_tx_state == ODOM_RESP_TX_SENDING){
+                odom_resp_tx_state = ODOM_RESP_TX_NONE;
+        }
 }
 
 /* 处理上位机发来的 0xAA 0x55 帧 */
