@@ -134,6 +134,7 @@ static uint32_t origin_event_counter = 0;
 static float odom_dx_world_acc = 0.0f;
 static float odom_dy_world_acc = 0.0f;
 static float odom_dyaw_acc = 0.0f;
+static float odom_local_yaw_offset_rad = 0.0f;
 static uint16_t odom_vel_ticks = 0;
 static volatile uint8_t encoder_sample_pending = 0;
 static volatile uint8_t encoder_delta_ready = 0;
@@ -403,15 +404,30 @@ static float odom_wrap_pi(float angle)
         return angle;
 }
 
+static float odom_get_raw_yaw_rad(void)
+{
+        return mpu_data[0].YAW_ANGLE * DEG_TO_RAD_F;
+}
+
+static float odom_get_local_yaw_rad(void)
+{
+        return odom_wrap_pi(odom_get_raw_yaw_rad() + odom_local_yaw_offset_rad);
+}
+
+static void odom_set_local_yaw_origin(float local_yaw_rad)
+{
+        odom_local_yaw_offset_rad = odom_wrap_pi(local_yaw_rad - odom_get_raw_yaw_rad());
+}
+
 static void reset_encoder_odom_yaw_reference(void)
 {
-        encoder_odom_last_yaw_rad = mpu_data[0].YAW_ANGLE * DEG_TO_RAD_F;
+        encoder_odom_last_yaw_rad = odom_get_local_yaw_rad();
         encoder_odom_yaw_initialized = 1U;
 }
 
 static void integrate_orthogonal_encoder_delta(void)
 {
-        float yaw_rad = mpu_data[0].YAW_ANGLE * DEG_TO_RAD_F;
+        float yaw_rad = odom_get_local_yaw_rad();
         float dyaw = 0.0f;
         float dx_wheel = (float)AS5048s[ODOM_X_ENCODER_INDEX].delta_dis
                        * ODOM_X_ENCODER_SIGN
@@ -519,6 +535,7 @@ static void handle_upstream_frame(const OdomUpstreamFrame_t *fr)
 
                 if((flags & ODOM_SET_ORIGIN_FLAG_RESET_YAW) != 0U){
                         /* 重置连续 yaw: 让下次 unwrap 输出 = new_yaw, prev_deg 锚定到当前角度 */
+                        odom_set_local_yaw_origin(new_yaw);
                         g_yaw_unwrap.continuous_rad = new_yaw;
                         g_yaw_unwrap.prev_deg       = mpu_data[0].YAW_ANGLE;
                         g_yaw_unwrap.initialized    = 1;
