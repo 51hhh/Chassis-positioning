@@ -37,8 +37,6 @@ int ecd_gb = 0;
 MPU_DATA mpu_data[4];
 float output_vector_data[3];
 arm_matrix_instance_f32 output_vector; 
-static CAN_TxHeaderTypeDef  encoder_tx_message;
-static uint8_t         encoder_can_send_data[4];
 float ACCX = 0; float ACCY = 0; float ACCZ = 0;
 
 
