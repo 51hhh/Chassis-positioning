@@ -34,6 +34,7 @@ Core/Src/usart.c \
 Core/Src/stm32f4xx_it.c \
 Core/Src/stm32f4xx_hal_msp.c \
 Core/Src/system_stm32f4xx.c \
+Core/Src/syscalls.c \
 MDK-ARM/YIS130.c \
 MDK-ARM/AS5048.c \
 MDK-ARM/odom_protocol.c \
