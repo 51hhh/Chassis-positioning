@@ -2,6 +2,7 @@
 #define YIS130_H
 #include <stdint.h>
 #define MPU_CAN   hcan1   
+#define YIS130_CAN_TIMEOUT_MS 100U
 #define AS5048_COUNTS_PER_REV 16384.0f
 #define WHEEL_DIAMETER_M 0.0818f
 #define AS5048_WHEEL_METERS_PER_COUNT_RAW ((3.1415926f * WHEEL_DIAMETER_M) / AS5048_COUNTS_PER_REV)
@@ -70,6 +71,11 @@ void CAN_CMD_ENCODER();
 
 
 void can_filter_init(void);
+uint8_t YIS130_IsAccFresh(uint32_t now_ms);
+uint8_t YIS130_IsGyroFresh(uint32_t now_ms);
+uint8_t YIS130_IsEulerFresh(uint32_t now_ms);
+uint8_t YIS130_IsQuatFresh(uint32_t now_ms);
+uint8_t YIS130_IsImuFresh(uint32_t now_ms);
 
 void get_mpu_measure(MPU_DATA *ptr,uint8_t *data ) ;
 

@@ -39,6 +39,50 @@ float output_vector_data[3];
 arm_matrix_instance_f32 output_vector; 
 float ACCX = 0; float ACCY = 0; float ACCZ = 0;
 
+#define YIS130_SEEN_ACC   (1U << 0)
+#define YIS130_SEEN_GYRO  (1U << 1)
+#define YIS130_SEEN_EULER (1U << 2)
+#define YIS130_SEEN_QUAT  (1U << 3)
+
+static volatile uint8_t yis130_seen_mask = 0U;
+static volatile uint32_t yis130_last_acc_ms = 0U;
+static volatile uint32_t yis130_last_gyro_ms = 0U;
+static volatile uint32_t yis130_last_euler_ms = 0U;
+static volatile uint32_t yis130_last_quat_ms = 0U;
+
+static uint8_t yis130_is_frame_fresh(volatile uint32_t *last_ms, uint8_t seen_bit, uint32_t now_ms)
+{
+    if ((yis130_seen_mask & seen_bit) == 0U) {
+        return 0U;
+    }
+    return ((uint32_t)(now_ms - *last_ms) <= YIS130_CAN_TIMEOUT_MS) ? 1U : 0U;
+}
+
+uint8_t YIS130_IsAccFresh(uint32_t now_ms)
+{
+    return yis130_is_frame_fresh(&yis130_last_acc_ms, YIS130_SEEN_ACC, now_ms);
+}
+
+uint8_t YIS130_IsGyroFresh(uint32_t now_ms)
+{
+    return yis130_is_frame_fresh(&yis130_last_gyro_ms, YIS130_SEEN_GYRO, now_ms);
+}
+
+uint8_t YIS130_IsEulerFresh(uint32_t now_ms)
+{
+    return yis130_is_frame_fresh(&yis130_last_euler_ms, YIS130_SEEN_EULER, now_ms);
+}
+
+uint8_t YIS130_IsQuatFresh(uint32_t now_ms)
+{
+    return yis130_is_frame_fresh(&yis130_last_quat_ms, YIS130_SEEN_QUAT, now_ms);
+}
+
+uint8_t YIS130_IsImuFresh(uint32_t now_ms)
+{
+    return (YIS130_IsGyroFresh(now_ms) != 0U && YIS130_IsEulerFresh(now_ms) != 0U) ? 1U : 0U;
+}
+
 
 
 
@@ -71,7 +115,11 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef rx_header;
     uint8_t rx_data[8] = {0};
+    uint32_t now_ms;
 
+    if (hcan != &hcan1) {
+        return;
+    }
 
     if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK) {
         HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
@@ -85,6 +133,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 	  uint16_t pitch_raw;
 	  uint16_t roll_raw; 
 	  uint16_t yaw_raw;
+    now_ms = HAL_GetTick();
     switch (rx_header.ExtId)
     {
 				
@@ -128,6 +177,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 					  ACCX = mpu_data[0].acc[0];
 						ACCY = mpu_data[0].acc[1];
 						ACCZ = mpu_data[0].acc[2];
+            yis130_last_acc_ms = now_ms;
+            yis130_seen_mask |= YIS130_SEEN_ACC;
 
 				
             break;
@@ -144,6 +195,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 						 mpu_data[0].gyro[1]=  (float)(((uint32_t)(rx_data[4])<< 12) | ((uint32_t)rx_data[3] << 4) | ((rx_data[2]&0xF0)>> 4))* 0.0078125 - 4000;
 						// 提取 GYRO_Z
 						 mpu_data[0].gyro[2] = (float)((((uint32_t)(rx_data[7]&0x0F) << 16) | ((uint32_t)rx_data[6] << 8) | rx_data[5] ))    * 0.0078125 - 4000;
+            yis130_last_gyro_ms = now_ms;
+            yis130_seen_mask |= YIS130_SEEN_GYRO;
 				    break;
 				
 				case 0x0CF03059: // quat
@@ -155,6 +208,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
             mpu_data[0].quat[1] = ((float)(((rx_data[3] << 8) | rx_data[2])))* 3.0519E-005 - 1;    // x
             mpu_data[0].quat[2] = ((float)(((rx_data[5] << 8) | rx_data[4])))* 3.0519E-005 - 1;    //y  
 						mpu_data[0].quat[3] = ((float)(((rx_data[7] << 8) | rx_data[6])))* 3.0519E-005 - 1; // z
+            yis130_last_quat_ms = now_ms;
+            yis130_seen_mask |= YIS130_SEEN_QUAT;
             break;
 				
 
@@ -185,9 +240,11 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 //					mpu_data[0].ROLL_ANGLE = atan2(2 * mpu_data[0].quat[2] * mpu_data[0].quat[3] + 2 * mpu_data[0].quat[0] * mpu_data[0].quat[1], -2 * mpu_data[0].quat[1] * mpu_data[0].quat[1] - 2 * mpu_data[0].quat[2]* mpu_data[0].quat[2] + 1)* 57.3; 
 //					mpu_data[0].YAW_ANGLE= atan2(2 * (mpu_data[0].quat[1]*mpu_data[0].quat[2] + mpu_data[0].quat[0]*mpu_data[0].quat[3]),mpu_data[0].quat[0]*mpu_data[0].quat[0]+mpu_data[0].quat[1]*mpu_data[0].quat[1]-mpu_data[0].quat[2]*mpu_data[0].quat[2]-mpu_data[0].quat[3]*mpu_data[0].quat[3])*57.3;//yaw
 //			
-				    mpu_data[0].PITCH = mpu_data[0].PITCH_ANGLE * (3.1415926/180); // Y
+            mpu_data[0].PITCH = mpu_data[0].PITCH_ANGLE * (3.1415926/180); // Y
             mpu_data[0].ROLL=  mpu_data[0].ROLL_ANGLE * (3.1415926/180); // X
             mpu_data[0].YAW = mpu_data[0].YAW_ANGLE * (3.1415926/180); //Z
+            yis130_last_euler_ms = now_ms;
+            yis130_seen_mask |= YIS130_SEEN_EULER;
 
 
 //            mpu_data[0].PITCH_ANGLE_Del = mpu_data[0].PITCH_ANGLE - mpu_data[0].PITCH_ANGLE_BEG;

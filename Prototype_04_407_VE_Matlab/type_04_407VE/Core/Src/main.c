@@ -594,16 +594,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 	                                                add++;
 	                                                uint8_t has_encoder_delta = take_encoder_delta_ready();
+	                                                uint32_t imu_now_ms = HAL_GetTick();
+	                                                uint8_t gyro_fresh = YIS130_IsGyroFresh(imu_now_ms);
+	                                                uint8_t yaw_fresh = YIS130_IsEulerFresh(imu_now_ms);
+	                                                uint8_t imu_fresh = YIS130_IsImuFresh(imu_now_ms);
 
 	                                                mpu_data[0].REAL_YAW = mpu_data[0].YAW_ANGLE;
 
-	            if(has_encoder_delta != 0U){
+	            if(has_encoder_delta != 0U && yaw_fresh != 0U){
 	                integrate_orthogonal_encoder_delta();
 	            }
 #if ODOM_BINARY_MODE
                                                 if(add >= ODOM_OUTPUT_TICKS){
                                                         /* 连续 yaw (rad) */
-                                                        float yaw_cont = odom_yaw_unwrap(&g_yaw_unwrap, mpu_data[0].YAW_ANGLE);
+                                                        float yaw_cont = g_yaw_unwrap.continuous_rad;
+                                                        if(yaw_fresh != 0U){
+                                                                yaw_cont = odom_yaw_unwrap(&g_yaw_unwrap, mpu_data[0].YAW_ANGLE);
+                                                        }
 
                                                         /* 计算 body-frame 速度 */
                                                         float dt = (float)odom_vel_ticks * (float)ODOM_ISR_PERIOD_US * 1e-6f;
@@ -617,17 +624,27 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
                                                         float sin_yaw = arm_sin_f32(yaw_cont);
                                                         float vx_body =  vx_world * cos_yaw + vy_world * sin_yaw;
                                                         float vy_body = -vx_world * sin_yaw + vy_world * cos_yaw;
-                                                        float wz = mpu_data[0].gyro[2] * DEG_TO_RAD_F; /* YIS130 gyro Z: deg/s -> rad/s */
+                                                        float wz = (gyro_fresh != 0U) ? (mpu_data[0].gyro[2] * DEG_TO_RAD_F) : 0.0f; /* YIS130 gyro Z: deg/s -> rad/s */
 
                                                         /* 时间戳 */
                                                         uint64_t t_us = odom_isr_tick * (uint64_t)ODOM_ISR_PERIOD_US;
 
                                                         /* 状态位 */
                                                         uint8_t enc_valid = ((AS5048s[0].valid != 0U) && (AS5048s[1].valid != 0U)) ? 1U : 0U;
-                                                        uint16_t status = ODOM_STATUS_IMU_VALID | ODOM_STATUS_YAW_VALID;
+                                                        uint8_t pose_valid = (enc_valid != 0U && yaw_fresh != 0U) ? 1U : 0U;
+                                                        uint16_t status = 0U;
                                                         uint8_t quality = ODOM_QUALITY_NORMAL;
+                                                        if(imu_fresh != 0U){
+                                                                status |= ODOM_STATUS_IMU_VALID;
+                                                        }
+                                                        if(yaw_fresh != 0U){
+                                                                status |= ODOM_STATUS_YAW_VALID;
+                                                        }
                                                         if(enc_valid != 0U){
-                                                                status |= ODOM_STATUS_ENC_VALID | ODOM_STATUS_POS_VALID | ODOM_STATUS_VEL_VALID;
+                                                                status |= ODOM_STATUS_ENC_VALID;
+                                                        }
+                                                        if(pose_valid != 0U && imu_fresh != 0U){
+                                                                status |= ODOM_STATUS_POS_VALID | ODOM_STATUS_VEL_VALID;
                                                         }else{
                                                                 status |= ODOM_STATUS_DEGRADED;
                                                                 quality = ODOM_QUALITY_DEGRADED;
@@ -671,7 +688,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 	                                        }else{
 
-	                                          if(take_encoder_delta_ready() != 0U){
+	                                          if(take_encoder_delta_ready() != 0U && YIS130_IsEulerFresh(HAL_GetTick()) != 0U){
 	                                                  reset_encoder_odom_yaw_reference();
 	                                          }
 	                                          mpu_data[0].vel[0] = 0;
