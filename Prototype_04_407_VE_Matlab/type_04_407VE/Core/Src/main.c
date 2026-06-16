@@ -483,6 +483,11 @@ static void reset_encoder_odom_yaw_reference(void)
 
 static void integrate_orthogonal_encoder_delta(const EncoderDeltaSample_t *sample)
 {
+        /* Guard: Skip integration if encoders are not valid */
+        if (sample->valid_mask != ODOM_ENCODER_VALID_ALL) {
+                return;
+        }
+
         float yaw_rad = odom_get_local_yaw_rad();
         float dyaw = 0.0f;
         float dx_wheel = (float)sample->x_counts
@@ -500,9 +505,20 @@ static void integrate_orthogonal_encoder_delta(const EncoderDeltaSample_t *sampl
                 encoder_odom_last_yaw_rad = yaw_rad;
         }
 
+        /* Orthogonal encoder kinematic resolution (45° X-configuration)
+         * Left wheel (dy_wheel/SPI2): 45° from +X axis, measures (forward + left) / √2
+         * Right wheel (dx_wheel/SPI1): 135° from +X axis, measures (forward - left) / √2
+         * Inverse kinematics:
+         *   dx_body = (left - right) / √2 = (dy_wheel - dx_wheel) / √2
+         *   dy_body = (left + right) / √2 = (dy_wheel + dx_wheel) / √2
+         */
+        const float INV_SQRT2 = 0.70710678118f;  // 1/sqrt(2)
+        float dx_body_raw = (dy_wheel - dx_wheel) * INV_SQRT2;  // FIXED: was swapped
+        float dy_body_raw = (dy_wheel + dx_wheel) * INV_SQRT2;  // FIXED: was swapped
+
         /* Rotation compensation for tracking wheels offset from robot center. */
-        float dx_body = dx_wheel + ODOM_X_WHEEL_Y_OFFSET_M * dyaw;
-        float dy_body = dy_wheel - ODOM_Y_WHEEL_X_OFFSET_M * dyaw;
+        float dx_body = dx_body_raw + ODOM_X_WHEEL_Y_OFFSET_M * dyaw;
+        float dy_body = dy_body_raw - ODOM_Y_WHEEL_X_OFFSET_M * dyaw;
         float cos_yaw = arm_cos_f32(yaw_rad);
         float sin_yaw = arm_sin_f32(yaw_rad);
         float dx_world = dx_body * cos_yaw - dy_body * sin_yaw;

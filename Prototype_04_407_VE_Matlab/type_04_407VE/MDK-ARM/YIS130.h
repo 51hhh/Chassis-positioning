@@ -14,7 +14,7 @@
 /* Orthogonal tracking wheel defaults: SPI1 -> body X/forward, SPI2 -> body Y/left. */
 #define ODOM_X_ENCODER_INDEX 0
 #define ODOM_Y_ENCODER_INDEX 1
-#define ODOM_X_ENCODER_SIGN 1.0f
+#define ODOM_X_ENCODER_SIGN 1.0f    // 恢复正向
 #define ODOM_Y_ENCODER_SIGN 1.0f
 #define ODOM_X_WHEEL_METERS_PER_COUNT AS5048_RIGHT_METERS_PER_COUNT
 #define ODOM_Y_WHEEL_METERS_PER_COUNT AS5048_LEFT_METERS_PER_COUNT
