@@ -24,6 +24,9 @@
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
 #include "YIS130.h"
 #include "arm_math.h"
 #include "stdio.h"
@@ -314,6 +317,8 @@ void SystemClock_Config(void)
   }
 }
 
+
+/* USER CODE BEGIN 4 */
 
 //DMA+空闲中断接收
 void Rcv_IdleCallback(void){
